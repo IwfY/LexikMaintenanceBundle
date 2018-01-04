@@ -170,9 +170,11 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
             return false;
         }
 
-        if (null !== $data[0]['ttl']) {
+        $ttlData = array_key_exists('ttl', $data[0]) === true ? $data[0]['ttl'] :
+            (array_key_exists('TTL', $data[0]) === true ? $data[0]['TTL'] : null);
+        if (null !== $ttlData) {
             $now = new \DateTime('now');
-            $ttl = new \DateTime($data[0]['ttl']);
+            $ttl = new \DateTime($ttlData);
 
             if ($ttl < $now) {
                 return $this->createUnlock();
@@ -190,15 +192,24 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
         $db = $this->pdoDriver->initDb();
         $data = $this->pdoDriver->selectStartdateQuery($db);
 
-        if (!empty($data)) {
-            //quick fix: set data
-            $this->options['startdate'] = $data[0]['startdate'];
-            $this->options['ttl'] = $data[0]['ttl'];
-
-            return true;
+        if (empty($data)) {
+            return false;
         }
 
-        return false;
+        $ttlData = array_key_exists('ttl', $data[0]) === true ? $data[0]['ttl'] :
+                (array_key_exists('TTL', $data[0]) === true ? $data[0]['TTL'] : null);
+        $startDateData = array_key_exists('startdate', $data[0]) === true ? $data[0]['startdate'] :
+                (array_key_exists('STARTDATE', $data[0]) === true ? $data[0]['STARTDATE'] : null);
+
+        if ($ttlData === null || $startDateData === null) {
+            return false;
+        }
+
+        //quick fix: set data
+        $this->options['startdate'] = $startDateData;
+        $this->options['ttl'] = $ttlData;
+
+        return true;
     }
 
     /**
@@ -213,15 +224,24 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
             $db = $this->pdoDriver->initDb();
             $data = $this->pdoDriver->selectStartdateQuery($db);
 
-            if (empty($data) || $data[0]['startdate'] === null) {
+            if (empty($data)) {
                 $this->pdoDriver->deleteStartdateQuery($db);
                 return false;
             }
 
+            $ttl = array_key_exists('ttl', $data[0]) === true ? $data[0]['ttl'] :
+                    (array_key_exists('TTL', $data[0]) === true ? $data[0]['TTL'] : 0);
+            $startDateData = array_key_exists('startdate', $data[0]) === true ? $data[0]['startdate'] :
+                    (array_key_exists('STARTDATE', $data[0]) === true ? $data[0]['STARTDATE'] : null);
+
+            if ($ttl === 0 || $ttl === null || $startDateData === null) {
+                $this->pdoDriver->deleteStartdateQuery($db);
+                return false;
+            }
+
+            $startDate = new \DateTime($startDateData);
+            $maintenanceEndDate = (new \DateTime($startDateData))->add(new \DateInterval('PT' . $ttl . 'S'));
             $now = new \DateTime('now');
-            $ttl = $data[0]['ttl'] ? $data[0]['ttl'] : 0;
-            $startDate = new \DateTime($data[0]['startdate']);
-            $maintenanceEndDate = (new \DateTime($data[0]['startdate']))->add(new \DateInterval('PT' . $ttl . 'S'));
 
             // return if ttl is already over
             if ($maintenanceEndDate <= $now) {
