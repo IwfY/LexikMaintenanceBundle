@@ -17,8 +17,6 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 class DriverScheduleLockCommand extends AbstractLockCommand
 {
-    protected $startdate;
-
     public function getTtlFromInput(InputInterface $input)
     {
         return $input->getOption('ttl');
@@ -48,35 +46,6 @@ EOT
      */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
-        $driver = $this->getDriver();
-
-        if ($driver instanceof DriverStartdateInterface) {
-
-            if (!is_null($this->startdate)) {
-                // set start date from command line if given and driver supports it
-                $driver->setStartDate($this->startdate);
-                $driver->setTtl($this->ttl);
-                $message = $driver->getMessageScheduleLock($driver->scheduleLock());
-            } else {
-                // this message is already generated within interact()
-                $message = sprintf('<fg=red>Delay or start date must be set.</>', get_class($driver));
-            }
-        } else {
-            $message = array(
-                '',
-                sprintf('<fg=red>Delay / start date doesn\'t work with %s driver</>', get_class($driver)),
-                '',
-            );
-        }         
-        
-        $output->writeln('<info>'.$message.'</info>');
-    }
-
-    /**
-     * Handle input options for start date / delay
-     */
-    protected function interact(InputInterface $input, OutputInterface $output)
-    {
         $startDate = null;
 
         if (null != $input->getArgument('delay')) {
@@ -96,14 +65,54 @@ EOT
             if (false === $startDate) {
                 throw new \InvalidArgumentException('Start date must be given in format: \'yyyy-m-d h:m\'.');
             }
-
         }
 
-        $this->startdate = $startDate;
-        
+        if (is_null($startDate)) {
+            $message = sprintf('<fg=red>Delay or start date must be set.</>');
+            $output->writeln('<info>' . $message . '</info>');
+            return 1;
+        }
+
+        $driver = $this->getDriver();
+
+        if ($input->isInteractive() === false && null !== $input->getOption('ttl')) {
+            $this->ttl = $input->getOption('ttl');
+        } elseif ($input->isInteractive() === false && $driver instanceof DriverTtlInterface) {
+            $this->ttl = $driver->getTtl();
+        }
+
+        if (($driver instanceof DriverStartdateInterface) === false) {
+            $message = array(
+                '',
+                sprintf('<fg=red>Delay / start date doesn\'t work with %s driver</>', get_class($driver)),
+                '',
+            );
+            $output->writeln('<info>' . $message . '</info>');
+            return 1;
+        }
+
+        // set start date from command line if given and driver supports it
+        $driver->setStartDate($startDate);
+        $driver->setTtl($this->ttl);
+        $message = $driver->getMessageScheduleLock($driver->scheduleLock());
+
+        $output->writeln('<info>' . $message . '</info>');
+
+        return 0;
+    }
+
+    /**
+     * Handle input options for start date / delay
+     */
+    protected function interact(InputInterface $input, OutputInterface $output)
+    {
+        if (null !== $input->getOption('ttl') && !is_numeric($input->getOption('ttl'))) {
+            throw new \InvalidArgumentException('Time must be an integer');
+        }
+
         $this->interactWithTtl($input, $output);
     }
-    
+
     /**
      * This method ensure that we stay compatible with symfony console 2.3 by using the deprecated dialog helper
      * but use the ConfirmationQuestion when available.
