@@ -5,6 +5,8 @@ namespace Lexik\Bundle\MaintenanceBundle\Drivers;
 use Doctrine\Bundle\DoctrineBundle\Registry;
 use Lexik\Bundle\MaintenanceBundle\Drivers\Query\DefaultQuery;
 use Lexik\Bundle\MaintenanceBundle\Drivers\Query\DsnQuery;
+use Lexik\Bundle\MaintenanceBundle\Drivers\Query\PdoQuery;
+use Lexik\Bundle\MaintenanceBundle\Drivers\Query\QueryStartdateInterface;
 
 /**
  * Class driver for handle database
@@ -12,7 +14,7 @@ use Lexik\Bundle\MaintenanceBundle\Drivers\Query\DsnQuery;
  * @package LexikMaintenanceBundle
  * @author  Gilles Gauthier <g.gauthier@lexik.fr>
  */
-class DatabaseDriver extends AbstractDriver implements DriverTtlInterface
+class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, DriverStartdateInterface
 {
     /**
      * @var Registry
@@ -31,7 +33,7 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface
 
     /**
      *
-     * @var PdoDriver
+     * @var PdoQuery
      */
     protected $pdoDriver;
 
@@ -79,6 +81,7 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface
                 $ttl = $this->options['ttl'];
                 $ttl = $now->modify(sprintf('+%s seconds', $ttl))->format('Y-m-d H:i:s');
             }
+            $this->pdoDriver->deleteStartdateQuery($db);
             $status = $this->pdoDriver->insertQuery($ttl, $db);
         } catch (\Exception $e) {
             $status = false;
@@ -106,13 +109,65 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface
     /**
      * {@inheritdoc}
      */
+    public function scheduleLock()
+    {
+        $db = $this->pdoDriver->initDb();
+        $status = false;
+
+        if ($this->pdoDriver instanceof QueryStartdateInterface && !$this->isExists())
+        {
+            /* @var $this->pdoDriver QueryStartdateInterface */
+            $startDate = null;
+            if (isset($this->options['startdate']) && $this->options['startdate'] instanceof \DateTime) {
+                $startDate = $this->options['startdate']->format('Y-m-d H:i:s');
+                $ttl = null;
+                if (isset($this->options['ttl']) && $this->options['ttl'] !== 0) {
+                    $ttl = $this->options['ttl'];
+                }
+                try {
+                    $data = $this->pdoDriver->selectStartdateQuery($db);
+                    if (!empty($data)) {
+                        // overwrite existing schedule
+                        $this->pdoDriver->deleteStartdateQuery($db);
+                    }
+
+                    $status = $this->pdoDriver->insertStartdateQuery($ttl, $startDate, $db);
+                } catch (\Exception $e) {
+                    $status = false;
+                }
+            }
+        }
+
+        return $status;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function unscheduleLock()
+    {
+        $db = $this->pdoDriver->initDb();
+        /* @var $this->pdoDriver QueryStartdateInterface */
+
+        $data = $this->pdoDriver->selectStartdateQuery($db);
+        if (empty($data)) {
+            // overwrite existing schedule
+            return false;
+        }
+
+        return $this->pdoDriver->deleteStartdateQuery($db);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
     public function isExists()
     {
         $db = $this->pdoDriver->initDb();
         $data = $this->pdoDriver->selectQuery($db);
 
-        if (!$data) {
-            return null;
+        if (empty($data)) {
+            return false;
         }
 
         if (null !== $data[0]['ttl']) {
@@ -125,6 +180,72 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface
         }
 
         return true;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function isExistsSchedule()
+    {
+        $db = $this->pdoDriver->initDb();
+        $data = $this->pdoDriver->selectStartdateQuery($db);
+
+        if (!empty($data)) {
+            //quick fix: set data
+            $this->options['startdate'] = $data[0]['startdate'];
+            $this->options['ttl'] = $data[0]['ttl'];
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function lockWhenScheduled()
+    {
+        $status = false;
+
+        if ($this->pdoDriver instanceof QueryStartdateInterface && !$this->isExists()) {
+            /* @var $this ->pdoDriver QueryStartdateInterface */
+            $db = $this->pdoDriver->initDb();
+            $data = $this->pdoDriver->selectStartdateQuery($db);
+
+            if (empty($data) || $data[0]['startdate'] === null) {
+                $this->pdoDriver->deleteStartdateQuery($db);
+                return false;
+            }
+
+            $now = new \DateTime('now');
+            $ttl = $data[0]['ttl'] ? $data[0]['ttl'] : 0;
+            $startDate = new \DateTime($data[0]['startdate']);
+            $maintenanceEndDate = (new \DateTime($data[0]['startdate']))->add(new \DateInterval('PT' . $ttl . 'S'));
+
+            // return if ttl is already over
+            if ($maintenanceEndDate <= $now) {
+                $this->pdoDriver->deleteStartdateQuery($db);
+                return false;
+            }
+
+            if ($startDate < $now) {
+                $this->options['ttl'] = $maintenanceEndDate->getTimestamp() - $now->getTimestamp();
+                $this->lock();
+
+                $status = true;
+            }
+        }
+
+        return $status;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function isDelayed()
+    {
+        return (isset($this->options['startdate']) && $this->options['startdate'] instanceof \DateTime);
     }
 
     /**
@@ -143,6 +264,26 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface
     public function getMessageUnlock($resultTest)
     {
         $key = $resultTest ? 'lexik_maintenance.success_unlock' : 'lexik_maintenance.not_success_unlock';
+
+        return $this->translator->trans($key, array(), 'maintenance');
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getMessageScheduleLock($resultTest)
+    {
+        $key = $resultTest ? 'lexik_maintenance.success_schedule_database' : 'lexik_maintenance.not_success_schedule';
+
+        return $this->translator->trans($key, array(), 'maintenance');
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getMessageUnscheduleLock($resultTest)
+    {
+        $key = $resultTest ? 'lexik_maintenance.success_unschedule_database' : 'lexik_maintenance.not_success_unschedule';
 
         return $this->translator->trans($key, array(), 'maintenance');
     }
@@ -170,4 +311,21 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface
     {
         return isset($this->options['ttl']);
     }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setStartDate($value)
+    {
+        $this->options['startdate'] = $value;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getStartDate()
+    {
+        return new \DateTime($this->options['startdate']);
+    }
+
 }
