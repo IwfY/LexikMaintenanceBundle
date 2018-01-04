@@ -113,7 +113,7 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
     {
         $db = $this->pdoDriver->initDb();
         $status = false;
-        
+
         if ($this->pdoDriver instanceof QueryStartdateInterface && !$this->isExists())
         {
             /* @var $this->pdoDriver QueryStartdateInterface */
@@ -130,7 +130,7 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
                         // overwrite existing schedule
                         $this->pdoDriver->deleteStartdateQuery($db);
                     }
-                    
+
                     $status = $this->pdoDriver->insertStartdateQuery($ttl, $startDate, $db);
                 } catch (\Exception $e) {
                     $status = false;
@@ -154,7 +154,7 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
             // overwrite existing schedule
             return false;
         }
-        
+
         return $this->pdoDriver->deleteStartdateQuery($db);
     }
 
@@ -165,7 +165,7 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
     {
         $db = $this->pdoDriver->initDb();
         $data = $this->pdoDriver->selectQuery($db);
-        
+
         if (empty($data)) {
             return false;
         }
@@ -189,12 +189,12 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
     {
         $db = $this->pdoDriver->initDb();
         $data = $this->pdoDriver->selectStartdateQuery($db);
-        
+
         if (!empty($data)) {
             //quick fix: set data
             $this->options['startdate'] = $data[0]['startdate'];
             $this->options['ttl'] = $data[0]['ttl'];
-            
+
             return true;
         }
 
@@ -213,20 +213,27 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
             $db = $this->pdoDriver->initDb();
             $data = $this->pdoDriver->selectStartdateQuery($db);
 
-            if (empty($data)) {
-                $status = false;
-            } elseif (null !== $data[0]['startdate']) {
-                $now = new \DateTime('now');
-                $ttl = $data[0]['ttl'] ? $data[0]['ttl'] : 0;
-                $startDate = new \DateTime($data[0]['startdate']);
+            if (empty($data) || $data[0]['startdate'] === null) {
+                $this->pdoDriver->deleteStartdateQuery($db);
+                return false;
+            }
 
-                if ($startDate < $now) {
-                    
-                    $this->options['ttl'] = $ttl;
-                    $this->lock();
+            $now = new \DateTime('now');
+            $ttl = $data[0]['ttl'] ? $data[0]['ttl'] : 0;
+            $startDate = new \DateTime($data[0]['startdate']);
+            $maintenanceEndDate = (new \DateTime($data[0]['startdate']))->add(new \DateInterval('PT' . $ttl . 'S'));
 
-                    $status = true;
-                }
+            // return if ttl is already over
+            if ($maintenanceEndDate <= $now) {
+                $this->pdoDriver->deleteStartdateQuery($db);
+                return false;
+            }
+
+            if ($startDate < $now) {
+                $this->options['ttl'] = $maintenanceEndDate->getTimestamp() - $now->getTimestamp();
+                $this->lock();
+
+                $status = true;
             }
         }
 
@@ -280,7 +287,7 @@ class DatabaseDriver extends AbstractDriver implements DriverTtlInterface, Drive
 
         return $this->translator->trans($key, array(), 'maintenance');
     }
-    
+
     /**
      * {@inheritdoc}
      */
